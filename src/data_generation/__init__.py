@@ -1,0 +1,1 @@
+"""Synthetic medical data generation."""
