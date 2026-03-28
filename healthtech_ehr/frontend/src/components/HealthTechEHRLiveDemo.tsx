@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 type VisitRow = {
   patient_id: string;
@@ -23,233 +23,260 @@ type SpikeRecord = {
   visit_date: string;
   cases_count: number;
   avg_prev_7d: number;
+  spike_flag: boolean;
 };
 
-const mockVisits: VisitRow[] = [
-  {
-    patient_id: 'patient_100381',
-    region_id: 'region_11',
-    visit_date: '2026-02-16',
-    icd_10_code: 'R06.0',
-    doctor_notes: 'Наблюдаются аритмия и одышка. Рекомендовано наблюдение.',
-  },
-  {
-    patient_id: 'patient_100882',
-    region_id: 'region_11',
-    visit_date: '2026-02-16',
-    icd_10_code: 'J10',
-    doctor_notes: 'Симптомы: кашель, температура. Назначено амбулаторное лечение.',
-  },
-  {
-    patient_id: 'patient_100129',
-    region_id: 'region_03',
-    visit_date: '2026-02-17',
-    icd_10_code: 'J10',
-    doctor_notes: 'Зафиксированы слабость, озноб, температура. Требуется диагностика.',
-  },
-  {
-    patient_id: 'patient_100444',
-    region_id: 'region_03',
-    visit_date: '2026-02-17',
-    icd_10_code: 'J10',
-    doctor_notes: 'Отмечены кашель, температура, одышка. Возможна госпитализация.',
-  },
-  {
-    patient_id: 'patient_100381',
-    region_id: 'region_11',
-    visit_date: '2026-02-20',
-    icd_10_code: 'I48',
-    doctor_notes: 'Пациент жалуется на аритмия, одышка. Состояние средней тяжести.',
-  },
-  {
-    patient_id: 'patient_100550',
-    region_id: 'region_27',
-    visit_date: '2026-02-21',
-    icd_10_code: 'R05',
-    doctor_notes: 'Наблюдаются кашель и слабость. Рекомендовано наблюдение.',
-  },
-  {
-    patient_id: 'patient_100781',
-    region_id: 'region_03',
-    visit_date: '2026-02-21',
-    icd_10_code: 'J10',
-    doctor_notes: 'Отмечены температура, кашель, озноб. Возможна госпитализация.',
-  },
-  {
-    patient_id: 'patient_100919',
-    region_id: 'region_03',
-    visit_date: '2026-02-21',
-    icd_10_code: 'J10',
-    doctor_notes: 'Симптомы: температура, кашель. Назначено амбулаторное лечение.',
-  },
-];
+type RunPreview = {
+  name: string;
+  rows: Array<Pick<VisitRow, 'patient_id' | 'region_id' | 'visit_date' | 'icd_10_code'>>;
+};
 
-const mockWalSeed: WalEvent[] = [
-  { timestamp: '2026-03-27T16:19:46.201Z', patient_id: 'patient_100000', device_id: 'ICU-0', spo2: 94, pulse: 75, resp_rate: 15 },
-  { timestamp: '2026-03-27T16:19:46.225Z', patient_id: 'patient_100001', device_id: 'ICU-1', spo2: 95, pulse: 76, resp_rate: 16 },
-  { timestamp: '2026-03-27T16:19:46.226Z', patient_id: 'patient_100002', device_id: 'ICU-2', spo2: 96, pulse: 77, resp_rate: 17 },
-  { timestamp: '2026-03-27T16:19:46.226Z', patient_id: 'patient_100003', device_id: 'ICU-3', spo2: 94, pulse: 78, resp_rate: 18 },
-];
+type TopTerm = {
+  term: string;
+  count: number;
+};
 
-const spikes: SpikeRecord[] = [
-  { region_id: 'region_03', icd_10_code: 'J10', visit_date: '2026-02-17', cases_count: 2, avg_prev_7d: 0.75 },
-  { region_id: 'region_03', icd_10_code: 'J10', visit_date: '2026-02-21', cases_count: 3, avg_prev_7d: 1.12 },
-  { region_id: 'region_11', icd_10_code: 'I48', visit_date: '2026-02-20', cases_count: 1, avg_prev_7d: 0.33 },
-];
+type DiagnosisWrite = {
+  timestamp: string;
+  patient_id: string;
+  diagnosis: string;
+};
 
-const tokenize = (text: string) => (text.toLowerCase().match(/[а-яa-z0-9]+/g) ?? []);
+type Snapshot = {
+  version: number;
+  split_brain: boolean;
+  run_files: RunPreview[];
+  merged_rows: VisitRow[];
+  wal_events: WalEvent[];
+  spikes: SpikeRecord[];
+  top_terms: TopTerm[];
+  diagnosis_log: DiagnosisWrite[];
+  totals: {
+    sampled_visits: number;
+    wal_events: number;
+  };
+};
 
-const fmt = (ts: string) => new Date(ts).toLocaleTimeString('ru-RU', { hour12: false });
+const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+
+async function readJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, init);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed with ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+const fmt = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 export function HealthTechEHRLiveDemo() {
-  const [chunkSize, setChunkSize] = useState(3);
-  const [mergeTick, setMergeTick] = useState(0);
-  const [query, setQuery] = useState('аритмия одышка');
-  const [isSplitBrain, setIsSplitBrain] = useState(false);
-  const [diagnosisDraft, setDiagnosisDraft] = useState('I48: Фибрилляция предсердий');
-  const [walEvents, setWalEvents] = useState<WalEvent[]>(mockWalSeed);
-
-  const runFiles = useMemo(() => {
-    const chunks: VisitRow[][] = [];
-    for (let i = 0; i < mockVisits.length; i += chunkSize) {
-      const batch = mockVisits.slice(i, i + chunkSize).sort((a, b) =>
-        [a.region_id, a.icd_10_code, a.visit_date, a.patient_id].join('|').localeCompare(
-          [b.region_id, b.icd_10_code, b.visit_date, b.patient_id].join('|'),
-          'ru',
-        ),
-      );
-      chunks.push(batch);
-    }
-    return chunks;
-  }, [chunkSize]);
-
-  const mergedRows = useMemo(() => {
-    const allRows = runFiles.flat();
-    return allRows.sort((a, b) =>
-      [a.region_id, a.icd_10_code, a.visit_date, a.patient_id].join('|').localeCompare(
-        [b.region_id, b.icd_10_code, b.visit_date, b.patient_id].join('|'),
-        'ru',
-      ),
-    );
-  }, [runFiles, mergeTick]);
-
-  const invertedIndex = useMemo(() => {
-    const index = new Map<string, Set<string>>();
-    for (const row of mergedRows) {
-      for (const token of tokenize(row.doctor_notes)) {
-        if (!index.has(token)) {
-          index.set(token, new Set());
-        }
-        index.get(token)!.add(row.patient_id);
-      }
-    }
-    return index;
-  }, [mergedRows]);
-
-  const queryTokens = query
-    .split(/\s+/)
-    .map((t) => t.trim().toLowerCase())
-    .filter(Boolean);
-
-  const foundPatients = useMemo(() => {
-    if (!queryTokens.length) return [];
-
-    const postings = queryTokens.map((t) => invertedIndex.get(t) ?? new Set<string>());
-    if (!postings.length) return [];
-
-    let result = new Set(postings[0]);
-    for (const posting of postings.slice(1)) {
-      result = new Set([...result].filter((p) => posting.has(p)));
-    }
-
-    return [...result].sort();
-  }, [queryTokens, invertedIndex]);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [query, setQuery] = useState('arrhythmia dyspnea');
+  const [foundPatients, setFoundPatients] = useState<string[]>([]);
+  const [diagnosisDraft, setDiagnosisDraft] = useState('I48: Arrhythmia and dyspnea under observation');
+  const [error, setError] = useState('');
+  const [streamStatus, setStreamStatus] = useState<'connecting' | 'live' | 'offline'>('connecting');
+  const [isSavingDiagnosis, setIsSavingDiagnosis] = useState(false);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      const last = walEvents[walEvents.length - 1];
-      const nextPulse = Math.max(60, Math.min(130, (last?.pulse ?? 80) + (Math.random() > 0.5 ? 1 : -1)));
-      const nextSpo2 = Math.max(88, Math.min(100, (last?.spo2 ?? 95) + (Math.random() > 0.6 ? 1 : -1)));
-      const nextResp = Math.max(10, Math.min(24, (last?.resp_rate ?? 16) + (Math.random() > 0.6 ? 1 : -1)));
+    let isActive = true;
 
-      const event: WalEvent = {
-        timestamp: new Date().toISOString(),
-        patient_id: `patient_${100000 + Math.floor(Math.random() * 9000)}`,
-        device_id: `ICU-${Math.floor(Math.random() * 4)}`,
-        spo2: nextSpo2,
-        pulse: nextPulse,
-        resp_rate: nextResp,
-      };
+    readJson<Snapshot>(`${API_BASE}/api/bootstrap`)
+      .then((data) => {
+        if (isActive) {
+          setSnapshot(data);
+          setError('');
+        }
+      })
+      .catch((err: Error) => {
+        if (isActive) {
+          setError(err.message);
+          setStreamStatus('offline');
+        }
+      });
 
-      setWalEvents((prev) => [...prev.slice(-15), event]);
-    }, 1300);
+    const eventSource = new EventSource(`${API_BASE}/api/stream`);
+    eventSource.addEventListener('open', () => {
+      if (isActive) {
+        setStreamStatus('live');
+      }
+    });
 
-    return () => clearInterval(timer);
-  }, [walEvents]);
+    eventSource.addEventListener('snapshot', (event) => {
+      if (!isActive) return;
+      const nextSnapshot = JSON.parse(event.data) as Snapshot;
+      setSnapshot(nextSnapshot);
+      setError('');
+      setStreamStatus('live');
+    });
 
-  const topTerms = useMemo(
-    () => [...invertedIndex.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 6),
-    [invertedIndex],
-  );
+    eventSource.addEventListener('error', () => {
+      if (isActive) {
+        setStreamStatus('offline');
+      }
+    });
+
+    return () => {
+      isActive = false;
+      eventSource.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+
+    readJson<{ patients: string[] }>(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`)
+      .then((data) => {
+        if (isActive) {
+          setFoundPatients(data.patients);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setFoundPatients([]);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [query, snapshot?.version]);
+
+  async function toggleSplitBrain() {
+    if (!snapshot) return;
+    try {
+      const next = await readJson<Snapshot>(`${API_BASE}/api/cap`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ split_brain: !snapshot.split_brain }),
+      });
+      setSnapshot(next);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update CAP mode');
+    }
+  }
+
+  async function saveDiagnosis() {
+    setIsSavingDiagnosis(true);
+    try {
+      const next = await readJson<Snapshot>(`${API_BASE}/api/diagnosis`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ diagnosis: diagnosisDraft }),
+      });
+      setSnapshot(next);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save diagnosis');
+    } finally {
+      setIsSavingDiagnosis(false);
+    }
+  }
+
+  if (!snapshot) {
+    return (
+      <main className="page">
+        <section className="hero">
+          <p className="eyebrow">HealthTech EHR • Live backend demo</p>
+          <h1>Waiting for Python backend</h1>
+          <p>{error || 'Loading initial state and opening live stream...'}</p>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="page">
       <header className="hero">
-        <p className="eyebrow">HealthTech EHR • Interactive Playground</p>
-        <h1>От дампа поликлиник до детектора эпидемий</h1>
+        <div className="hero-topline">
+          <p className="eyebrow">HealthTech EHR • Frontend + Python backend</p>
+          <span className={`status-pill ${streamStatus}`}>{streamStatus}</span>
+        </div>
+        <h1>Live EHR pipeline with streaming telemetry and CAP write guard</h1>
         <p>
-          Живая визуализация External Sort, Inverted Index, WAL и MapReduce с CAP-сценарием split-brain для EHR (режим CP).
+          The UI now reads live state from Python, listens over server-sent events, and shows new WAL/device activity and fresh visit records in real time.
         </p>
+        {error ? <p className="error-banner">{error}</p> : null}
       </header>
 
       <section className="grid two">
         <article className="card">
-          <h2>Этап 1 — External Merge Sort</h2>
-          <label>
-            Chunk size (строк в run-файле): <strong>{chunkSize}</strong>
-            <input type="range" min={2} max={5} value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} />
-          </label>
-          <button onClick={() => setMergeTick((x) => x + 1)}>Смоделировать Merge через Min-Heap</button>
+          <h2>Stage 1 — External sort previews</h2>
+          <p className="muted">
+            Run files are read from Python-generated CSV output. Sampled visits in live memory: <strong>{snapshot.totals.sampled_visits}</strong>
+          </p>
           <div className="runs">
-            {runFiles.map((run, i) => (
-              <div key={i} className="run">
-                <h4>run_{String(i + 1).padStart(4, '0')}</h4>
-                {run.map((row) => (
-                  <p key={`${row.patient_id}-${row.visit_date}`}>{row.region_id} • {row.icd_10_code} • {row.patient_id}</p>
+            {snapshot.run_files.map((run) => (
+              <div key={run.name} className="run">
+                <h4>{run.name}</h4>
+                {run.rows.map((row) => (
+                  <p key={`${run.name}-${row.patient_id}`}>
+                    {row.region_id} • {row.icd_10_code} • {row.patient_id}
+                  </p>
                 ))}
               </div>
             ))}
           </div>
-          <p className="muted">Merged rows: {mergedRows.length}. Sequential merge минимизирует random I/O на больших дампах.</p>
+
+          <h3>Latest merged rows</h3>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Patient</th>
+                  <th>Region</th>
+                  <th>Date</th>
+                  <th>ICD-10</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snapshot.merged_rows.map((row) => (
+                  <tr key={`${row.patient_id}-${row.visit_date}-${row.icd_10_code}`}>
+                    <td>{row.patient_id}</td>
+                    <td>{row.region_id}</td>
+                    <td>{row.visit_date}</td>
+                    <td>{row.icd_10_code}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </article>
 
         <article className="card">
-          <h2>Этап 2 — Inverted Index + WAL</h2>
+          <h2>Stage 2 — Inverted index + WAL</h2>
           <label>
-            Поиск по notes (AND):
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="аритмия одышка" />
+            Search notes with AND semantics
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="arrhythmia dyspnea" />
           </label>
           <p>
-            Найдено пациентов: <strong>{foundPatients.length}</strong>
+            Matching patients: <strong>{foundPatients.length}</strong>
           </p>
-          <div className="tags">{foundPatients.map((id) => <span key={id}>{id}</span>)}</div>
+          <div className="tags">
+            {foundPatients.length ? foundPatients.map((id) => <span key={id}>{id}</span>) : <span>No match yet</span>}
+          </div>
 
           <h3>Top terms</h3>
-          <ul>
-            {topTerms.map(([term, ids]) => (
-              <li key={term}>{term}: {ids.size} пациентов</li>
+          <ul className="term-list">
+            {snapshot.top_terms.map((term) => (
+              <li key={term.term}>
+                <span>{term.term}</span>
+                <strong>{term.count}</strong>
+              </li>
             ))}
           </ul>
 
-          <h3>WAL stream (append-only)</h3>
+          <h3>WAL stream</h3>
           <div className="wal">
-            {walEvents.slice(-8).map((e) => (
-              <div key={`${e.timestamp}-${e.patient_id}`} className="wal-row">
-                <span>{fmt(e.timestamp)}</span>
-                <span>{e.device_id}</span>
-                <span>SpO₂ {e.spo2}%</span>
-                <span>Pulse {e.pulse}</span>
-                <span>RR {e.resp_rate}</span>
+            {snapshot.wal_events.map((event) => (
+              <div key={`${event.timestamp}-${event.patient_id}`} className="wal-row">
+                <span>{fmt(event.timestamp)}</span>
+                <span>{event.device_id}</span>
+                <span>SpO2 {event.spo2}%</span>
+                <span>Pulse {event.pulse}</span>
+                <span>RR {event.resp_rate}</span>
               </div>
             ))}
           </div>
@@ -258,53 +285,72 @@ export function HealthTechEHRLiveDemo() {
 
       <section className="grid two">
         <article className="card">
-          <h2>Этап 3 — MapReduce эпидсводка</h2>
-          <p className="muted">Mapper → (region_id, icd_10_code, visit_date, 1), Reducer суммирует cases_count.</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Region</th>
-                <th>ICD-10</th>
-                <th>Date</th>
-                <th>Cases</th>
-                <th>Avg prev 7d</th>
-                <th>Spike</th>
-              </tr>
-            </thead>
-            <tbody>
-              {spikes.map((s) => (
-                <tr key={`${s.region_id}-${s.icd_10_code}-${s.visit_date}`}>
-                  <td>{s.region_id}</td>
-                  <td>{s.icd_10_code}</td>
-                  <td>{s.visit_date}</td>
-                  <td>{s.cases_count}</td>
-                  <td>{s.avg_prev_7d.toFixed(2)}</td>
-                  <td>{s.cases_count > 2 * s.avg_prev_7d && s.avg_prev_7d > 0 ? '🔥' : '—'}</td>
+          <h2>Stage 3 — MapReduce spike summary</h2>
+          <p className="muted">
+            Historical spike rows come from Python CSV output, and live visits update the latest per-day counts on top.
+          </p>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Region</th>
+                  <th>ICD-10</th>
+                  <th>Date</th>
+                  <th>Cases</th>
+                  <th>Avg prev 7d</th>
+                  <th>Spike</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {snapshot.spikes.map((spike) => (
+                  <tr key={`${spike.region_id}-${spike.icd_10_code}-${spike.visit_date}`}>
+                    <td>{spike.region_id}</td>
+                    <td>{spike.icd_10_code}</td>
+                    <td>{spike.visit_date}</td>
+                    <td>{spike.cases_count}</td>
+                    <td>{spike.avg_prev_7d.toFixed(2)}</td>
+                    <td>{spike.spike_flag ? 'HOT' : 'OK'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </article>
 
         <article className="card cap">
-          <h2>Этап 4 — CAP/CP и split-brain</h2>
+          <h2>Stage 4 — CAP / split-brain write guard</h2>
           <label className="switch">
-            <input type="checkbox" checked={isSplitBrain} onChange={() => setIsSplitBrain((v) => !v)} />
-            <span>Симулировать partition между DC-A и DC-B</span>
+            <input type="checkbox" checked={snapshot.split_brain} onChange={toggleSplitBrain} />
+            <span>Simulate partition between DC-A and DC-B</span>
           </label>
 
           <label>
-            Диагноз для записи:
-            <input value={diagnosisDraft} onChange={(e) => setDiagnosisDraft(e.target.value)} />
+            Diagnosis draft
+            <input value={diagnosisDraft} onChange={(event) => setDiagnosisDraft(event.target.value)} />
           </label>
 
-          <button disabled={isSplitBrain} className={isSplitBrain ? 'danger' : 'ok'}>
-            {isSplitBrain ? 'HTTP 503 • Write denied (CP guard)' : 'Записать диагноз'}
+          <button onClick={saveDiagnosis} disabled={snapshot.split_brain || isSavingDiagnosis} className={snapshot.split_brain ? 'danger' : 'ok'}>
+            {snapshot.split_brain ? 'HTTP 503 • Write denied' : isSavingDiagnosis ? 'Saving...' : 'Write diagnosis'}
           </button>
 
           <p className="muted">
-            В split-brain режим CP блокирует write, чтобы исключить double-write и конфликт версий в медкарте.
+            In CP mode the backend rejects writes during a partition to avoid conflicting versions of the same patient record.
           </p>
+
+          <h3>Recent writes</h3>
+          <div className="diagnosis-log">
+            {snapshot.diagnosis_log.length ? (
+              snapshot.diagnosis_log.map((entry) => (
+                <div key={`${entry.timestamp}-${entry.patient_id}`} className="diagnosis-row">
+                  <span>{fmt(entry.timestamp)}</span>
+                  <span>{entry.patient_id}</span>
+                  <span>{entry.diagnosis}</span>
+                </div>
+              ))
+            ) : (
+              <p className="muted">No manual writes yet.</p>
+            )}
+          </div>
         </article>
       </section>
     </main>
