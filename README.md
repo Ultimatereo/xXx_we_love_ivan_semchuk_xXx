@@ -1,6 +1,4 @@
 # xXx_we_love_ivan_semchuk_xXx
-We love Ivan Semchuk. Please give us the highest ratings and provide with biiiig support and love. With Love By Love and Driven By Love to Ivan Semchuk.
-
 ЦЕЛЫХ ДВЕ РЕАЛИЗАЦИИ ПО ЦЕНЕ ОДНОЙ!!!
 
 1. [Реализация Ультиматерии](https://github.com/Ultimatereo/xXx_we_love_ivan_semchuk_xXx/tree/Ultimatereo)
@@ -8,3 +6,4 @@ We love Ivan Semchuk. Please give us the highest ratings and provide with biiiig
 
 [Прелестная презенташка сия чуда](https://github.com/Ultimatereo/xXx_we_love_ivan_semchuk_xXx/blob/Ultimatereo/presentation/ultimatereo_presentation.pdf)
 
+![АААААА](https://avatars.mds.yandex.net/i?id=63e433ba5761a293c1dde1ef9699f1df73464633-10355097-images-thumbs&n=13)
