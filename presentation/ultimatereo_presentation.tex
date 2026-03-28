@@ -43,6 +43,7 @@
 \end{frame}
 
 \begin{frame}{План реализации по дням}
+\small
 \begin{block}{Этап 1 (Дни 1--2): Storage Engineer}
 External Merge Sort: разбиение большого CSV-дампа на run-файлы + K-way merge через Min-Heap.
 \end{block}
@@ -62,8 +63,8 @@ CAP-анализ: почему EHR-периметр обязан работат�
 
 \begin{frame}{UML Use Case: целевые сценарии}
 \centering
-\begin{tikzpicture}[font=\small, node distance=1.2cm and 1.8cm]
-  \node[draw, rounded corners, minimum width=11.8cm, minimum height=5.9cm] (sys) {};
+\begin{tikzpicture}[font=\scriptsize, node distance=1.1cm and 1.6cm]
+  \node[draw, rounded corners, minimum width=11.3cm, minimum height=5.6cm] (sys) {};
   \node[anchor=north] at (sys.north) {\textbf{Платформа EHR + ICU}};
 
   \node[draw, ellipse, minimum width=3.2cm] (uc1) at (-2.8,1.7) {Сортировать дамп};
@@ -126,7 +127,7 @@ CAP-анализ: почему EHR-периметр обязан работат�
 \begin{frame}{Этап 2. Inverted Index + WAL}
 \begin{columns}[T,onlytextwidth]
 \column{0.52\textwidth}
-\textbf{Inverted Index}\
+\textbf{Inverted Index}\\[0.2em]
 \begin{itemize}
   \item Токенизация заметок (ru/en/alnum) в lowercase.
   \item Индекс: \texttt{term \rightarrow set(patient\_id)}.
@@ -137,7 +138,7 @@ CAP-анализ: почему EHR-периметр обязан работат�
 \textbf{Кейс:} запрос \texttt{аритмия + одышка} возвращает пересечение пациентов за миллисекунды после загрузки индекса.
 
 \column{0.48\textwidth}
-\textbf{WAL ICU}\
+\textbf{WAL ICU}\\[0.2em]
 \begin{itemize}
   \item Append-only JSONL: последовательная запись без random update.
   \item Каждое событие: \texttt{timestamp, patient\_id, device\_id, spo2, pulse, resp\_rate}.
