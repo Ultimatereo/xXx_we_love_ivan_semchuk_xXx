@@ -1,0 +1,292 @@
+\documentclass[aspectratio=169,12pt]{beamer}
+
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian]{babel}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,shapes.misc,fit,calc,backgrounds}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+
+\title{Платформа интеграции EHR и ICU-телеметрии}
+\subtitle{От External Sort до CAP-анализа (ветка \texttt{Ultimatereo})}
+\author{Команда платформы здравоохранения}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Контекст и цели проекта}
+\textbf{Контекст:}
+\begin{itemize}
+  \item Интеграция дневных транзакционных дампов поликлиник и телеметрии реанимаций.
+  \item Поиск эпидемиологических пересечений симптомов на исторических данных большого объёма.
+\end{itemize}
+
+\vspace{0.5em}
+\textbf{Бизнес-цели:}
+\begin{itemize}
+  \item Быстрое пополнение и сортировка данных при ограничении RAM.
+  \item Мгновенный полнотекстовый поиск по записям врачей.
+  \item Надёжный журнал событий ICU (append-only).
+  \item Выявление всплесков заболеваемости по регионам и кодам ICD-10.
+  \item Архитектурное обоснование выбора CP в критичном EHR-контуре.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{План реализации по дням}
+\begin{block}{Этап 1 (Дни 1--2): Storage Engineer}
+External Merge Sort: разбиение большого CSV-дампа на run-файлы + K-way merge через Min-Heap.
+\end{block}
+
+\begin{block}{Этап 2 (День 3): Platform Engineer}
+Inverted Index по \texttt{doctor\_notes} + append-only WAL для потока пульсоксиметров.
+\end{block}
+
+\begin{block}{Этап 3 (День 4): Data Engineer}
+MapReduce pipeline: агрегация кейсов по \texttt{(region\_id, icd\_10\_code, visit\_date)} и поиск всплесков.
+\end{block}
+
+\begin{block}{Этап 4 (Дни 5--6): Командный System Design}
+CAP-анализ: почему EHR-периметр обязан работать в режиме CP при split-brain.
+\end{block}
+\end{frame}
+
+\begin{frame}{UML Use Case: целевые сценарии}
+\centering
+\begin{tikzpicture}[font=\small, node distance=1.2cm and 1.8cm]
+  \node[draw, rounded corners, minimum width=11.8cm, minimum height=5.9cm] (sys) {};
+  \node[anchor=north] at (sys.north) {\textbf{Платформа EHR + ICU}};
+
+  \node[draw, ellipse, minimum width=3.2cm] (uc1) at (-2.8,1.7) {Сортировать дамп};
+  \node[draw, ellipse, minimum width=3.8cm] (uc2) at (2.8,1.7) {Индексировать заметки};
+  \node[draw, ellipse, minimum width=4.0cm] (uc3) at (-2.8,0.2) {Искать: аритмия \& одышка};
+  \node[draw, ellipse, minimum width=3.8cm] (uc4) at (2.8,0.2) {Логировать ICU поток};
+  \node[draw, ellipse, minimum width=4.0cm] (uc5) at (-2.8,-1.3) {Строить эпи-сводку};
+  \node[draw, ellipse, minimum width=4.2cm] (uc6) at (2.8,-1.3) {Контроль консистентности};
+
+  \node[draw, rectangle, minimum width=2.4cm] (a1) at (-7.2,1.0) {Storage Engineer};
+  \node[draw, rectangle, minimum width=2.4cm] (a2) at (-7.2,-0.6) {Epidemiologist};
+  \node[draw, rectangle, minimum width=2.4cm] (a3) at (7.2,1.0) {Platform Engineer};
+  \node[draw, rectangle, minimum width=2.4cm] (a4) at (7.2,-0.6) {ICU Monitor};
+
+  \draw[-{Stealth}] (a1.east) -- (uc1.west);
+  \draw[-{Stealth}] (a2.east) -- (uc3.west);
+  \draw[-{Stealth}] (a2.east) -- (uc5.west);
+  \draw[-{Stealth}] (a3.west) -- (uc2.east);
+  \draw[-{Stealth}] (a3.west) -- (uc6.east);
+  \draw[-{Stealth}] (a4.west) -- (uc4.east);
+\end{tikzpicture}
+\end{frame}
+
+\begin{frame}{Этап 1. Генерация и сортировка дампа}
+\textbf{Данные}\,: CSV c полями \texttt{[patient\_id, region\_id, visit\_date, icd\_10\_code, doctor\_notes]}.
+
+\begin{itemize}
+  \item Синтетический генератор на Faker формирует дамп размером минимум в 5 раз больше лимита RAM.
+  \item В \texttt{create\_initial\_runs()} файл читается чанками, сортируется по ключу
+  \texttt{(region, icd\_10, date, patient)}.
+  \item В \texttt{merge\_runs()} выполняется K-way merge через Min-Heap, чтобы минимизировать random I/O.
+\end{itemize}
+
+\vspace{0.5em}
+\textbf{Результат}\,: масштабируемая ежедневная сортировка без загрузки всего дампа в память.
+\end{frame}
+
+\begin{frame}{UML Sequence: External Merge Sort}
+\centering
+\begin{tikzpicture}[font=\scriptsize, node distance=1.8cm]
+  \tikzstyle{lifeline}=[draw, minimum width=2.1cm, minimum height=0.7cm, fill=blue!6]
+  \node[lifeline] (g) {Generator};
+  \node[lifeline, right=1.8cm of g] (r) {Run Builder};
+  \node[lifeline, right=1.8cm of r] (h) {Min-Heap};
+  \node[lifeline, right=1.8cm of h] (o) {Sorted Output};
+
+  \draw[dashed] (g.south) -- ++(0,-4.8);
+  \draw[dashed] (r.south) -- ++(0,-4.8);
+  \draw[dashed] (h.south) -- ++(0,-4.8);
+  \draw[dashed] (o.south) -- ++(0,-4.8);
+
+  \draw[-{Stealth}] (g.south) ++(0,-0.6) -- node[above]{chunk[i]} (r.south |- g.south);
+  \draw[-{Stealth}] (r.south) ++(0,-1.4) -- node[above]{sort(chunk), write run\_i} (g.south |- r.south);
+  \draw[-{Stealth}] (r.south) ++(0,-2.2) -- node[above]{head(run\_i)} (h.south |- r.south);
+  \draw[-{Stealth}] (h.south) ++(0,-3.0) -- node[above]{extract-min()} (o.south |- h.south);
+  \draw[-{Stealth}] (o.south) ++(0,-3.8) -- node[above]{request next from same run} (h.south |- o.south);
+\end{tikzpicture}
+\end{frame}
+
+\begin{frame}{Этап 2. Inverted Index + WAL}
+\begin{columns}[T,onlytextwidth]
+\column{0.52\textwidth}
+\textbf{Inverted Index}\
+\begin{itemize}
+  \item Токенизация заметок (ru/en/alnum) в lowercase.
+  \item Индекс: \texttt{term \rightarrow set(patient\_id)}.
+  \item Поиск \texttt{AND} = пересечение posting lists.
+\end{itemize}
+
+\vspace{0.4em}
+\textbf{Кейс:} запрос \texttt{аритмия + одышка} возвращает пересечение пациентов за миллисекунды после загрузки индекса.
+
+\column{0.48\textwidth}
+\textbf{WAL ICU}\
+\begin{itemize}
+  \item Append-only JSONL: последовательная запись без random update.
+  \item Каждое событие: \texttt{timestamp, patient\_id, device\_id, spo2, pulse, resp\_rate}.
+  \item Восстановление последних \texttt{N} событий через буфер-очередь.
+\end{itemize}
+
+\vspace{0.4em}
+\textbf{Плюс:} высокая пропускная способность на write-heavy телеметрии.
+\end{columns}
+\end{frame}
+
+\begin{frame}{UML Component: индекс и телеметрия}
+\centering
+\begin{tikzpicture}[font=\small, node distance=1.0cm and 1.5cm,
+comp/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm, fill=green!7}]
+
+\node[comp] (csv) {sorted\_visits.csv};
+\node[comp, right=2.2cm of csv] (tok) {Tokenizer};
+\node[comp, right=2.2cm of tok] (idx) {Inverted Index};
+\node[comp, below=1.5cm of tok] (query) {AND Query Engine};
+\node[comp, below=1.5cm of csv] (icu) {ICU Devices};
+\node[comp, right=2.2cm of icu] (wal) {WAL JSONL};
+\node[comp, right=2.2cm of wal] (tail) {Last-N Reader};
+
+\draw[-{Stealth}] (csv) -- node[above]{doctor\_notes} (tok);
+\draw[-{Stealth}] (tok) -- node[above]{term$\rightarrow$patient} (idx);
+\draw[-{Stealth}] (query) -- node[right]{postings} (idx);
+\draw[-{Stealth}] (icu) -- node[above]{append(event)} (wal);
+\draw[-{Stealth}] (wal) -- node[above]{tail(n)} (tail);
+\end{tikzpicture}
+\end{frame}
+
+\begin{frame}{Этап 3. MapReduce для эпидемиологии}
+\begin{itemize}
+  \item \textbf{Mapper}: на каждый визит эмитит \texttt{(region\_id, icd\_10\_code, visit\_date) -> 1}.
+  \item \textbf{Shuffle/Sort}: группировка ключей, подготовка к агрегации.
+  \item \textbf{Reducer}: суммирование \texttt{cases\_count} по каждому ключу.
+  \item \textbf{Spike Detection}: сравнение текущего дня со средним за предыдущие 7 дней,
+  флаг всплеска при \(count > 2 \times avg\_{prev7d}\).
+\end{itemize}
+
+\vspace{0.5em}
+\textbf{Выходные артефакты:}
+\begin{itemize}
+  \item \texttt{epidemic\_summary.csv} --- агрегаты по региону, ICD-10 и дате.
+  \item \texttt{spikes.csv} --- кандидаты на эпидемиологические всплески.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{UML Activity: MapReduce pipeline}
+\centering
+\begin{tikzpicture}[font=\small, node distance=0.8cm,
+act/.style={draw, rounded corners, minimum width=6.6cm, minimum height=0.75cm, fill=orange!10}]
+  \node[draw, circle, fill=black, inner sep=1.5pt] (start) {};
+  \node[act, below=0.8cm of start] (a1) {Read sorted\_visits.csv};
+  \node[act, below=of a1] (a2) {Map: emit (region, icd, date, 1)};
+  \node[act, below=of a2] (a3) {Shuffle/Sort by key};
+  \node[act, below=of a3] (a4) {Reduce: sum counts};
+  \node[act, below=of a4] (a5) {Compute 7-day moving baseline};
+  \node[act, below=of a5] (a6) {Mark spikes and write spikes.csv};
+  \node[draw, circle, fill=black, inner sep=1.5pt, below=0.8cm of a6] (end) {};
+
+  \draw[-{Stealth}] (start) -- (a1);
+  \draw[-{Stealth}] (a1) -- (a2);
+  \draw[-{Stealth}] (a2) -- (a3);
+  \draw[-{Stealth}] (a3) -- (a4);
+  \draw[-{Stealth}] (a4) -- (a5);
+  \draw[-{Stealth}] (a5) -- (a6);
+  \draw[-{Stealth}] (a6) -- (end);
+\end{tikzpicture}
+\end{frame}
+
+\begin{frame}{Этап 4. CAP-анализ: почему CP для EHR}
+\textbf{Требование домена:} недопустим конфликт версий диагноза/аллергии при сетевом разделении.
+
+\begin{columns}[T,onlytextwidth]
+\column{0.52\textwidth}
+\textbf{При split-brain:}
+\begin{itemize}
+  \item Кластер распадается на 2 изолированные части.
+  \item Независимые записи врача в обе части создают double-write.
+  \item Позже конфликт не всегда разрешим автоматически (клинический риск).
+\end{itemize}
+
+\column{0.48\textwidth}
+\textbf{Выбранная политика:}
+\begin{itemize}
+  \item В контуре медкарт предпочитаем \textbf{Consistency + Partition tolerance}.
+  \item Узлы без кворума отклоняют запись (\texttt{503 Service Unavailable}).
+  \item Availability падает локально, но целостность данных сохраняется.
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{UML Deployment + split-brain сценарий}
+\centering
+\begin{tikzpicture}[font=\scriptsize, node distance=0.8cm and 1.0cm,
+nodebox/.style={draw, rounded corners, minimum width=2.7cm, minimum height=0.7cm, fill=cyan!10}]
+
+\node[nodebox] (docA) at (-5.0, 2.0) {Doctor API (Zone A)};
+\node[nodebox] (cpA) at (-5.0, 0.8) {CP Node A};
+\node[nodebox] (dbA) at (-5.0,-0.4) {EHR Store A};
+
+\node[nodebox] (docB) at (5.0, 2.0) {Doctor API (Zone B)};
+\node[nodebox] (cpB) at (5.0, 0.8) {CP Node B};
+\node[nodebox] (dbB) at (5.0,-0.4) {EHR Store B};
+
+\draw[-{Stealth}] (docA) -- (cpA);
+\draw[-{Stealth}] (cpA) -- (dbA);
+\draw[-{Stealth}] (docB) -- (cpB);
+\draw[-{Stealth}] (cpB) -- (dbB);
+
+\draw[very thick, red, dashed] (-1.8,0.8) -- (1.8,0.8);
+\node[red] at (0,1.1) {Network partition};
+
+\draw[-{Stealth}, thick] (cpA.east) -- node[above]{replication} (cpB.west);
+\draw[red, line width=1.2pt] (-0.2,0.8) -- (0.2,0.8);
+
+\node[draw, fill=red!12, rounded corners, align=center, minimum width=4.8cm] at (0,-2.0)
+{Нет кворума $\Rightarrow$ reject write\\\texttt{HTTP 503} (предотвращение double-write)};
+\end{tikzpicture}
+\end{frame}
+
+\begin{frame}{Итоговые артефакты и эффект}
+\begin{table}
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}p{7.3cm}}
+\toprule
+\textbf{Артефакт} & \textbf{Назначение} \\
+\midrule
+\texttt{visits.csv} & Сырой ежедневный медицинский дамп (размер $>$ 5\,$\times$ RAM-limit). \\
+\texttt{run\_*.csv} + \texttt{sorted\_visits.csv} & Масштабируемая внешняя сортировка для аналитики. \\
+\texttt{inverted\_index.json} & Быстрый поиск пациентов по симптомам в \texttt{doctor\_notes}. \\
+\texttt{icu\_monitor.jsonl} & Последовательный надёжный журнал телеметрии ICU. \\
+\texttt{epidemic\_summary.csv}, \texttt{spikes.csv} & Выявление региональных всплесков по ICD-10. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.6em}
+\centering
+\textbf{Результат:} единый конвейер ingestion + indexing + outbreak analytics + безопасный CP-контур EHR.
+\end{frame}
+
+\begin{frame}
+\centering
+\Huge Спасибо! \\
+\Large Готовы к защите архитектуры и демо.
+\end{frame}
+
+\end{document}

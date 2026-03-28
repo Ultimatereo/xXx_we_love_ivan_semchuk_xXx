@@ -85,3 +85,17 @@ npm run build
 npm run preview
 ```
 
+pip install -r requirements.txt
+## Презентация (LaTeX Beamer)
+
+Подготовлена презентация по итогам выполнения ТЗ в ветке `Ultimatereo`:
+
+- `presentation/ultimatereo_presentation.tex`
+
+Сборка (пример):
+
+```bash
+cd presentation
+pdflatex ultimatereo_presentation.tex
+# при необходимости повторить 2 раза для стабилизации ссылок/верстки
+```
